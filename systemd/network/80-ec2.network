@@ -3,28 +3,29 @@ Driver=ena ixgbevf vif
 
 [Link]
 MTUBytes=9001
+RequiredFamilyForOnline=any
 
 [Network]
 DHCP=yes
 IPv6DuplicateAddressDetection=0
 LLMNR=no
 DNSDefaultRoute=yes
+IPv6AcceptRA=true
 
 [DHCPv4]
 UseHostname=no
 UseDNS=yes
-UseNTP=yes
-UseDomains=yes
+; UseNTP=yes
+; UseDomains=yes
 
 [DHCPv6]
 UseHostname=no
 UseDNS=yes
-UseNTP=yes
-WithoutRA=solicit
+; UseNTP=yes
+; WithoutRA=solicit
 
-[Route]
-Gateway=_ipv6ra
-
-[IPv6AcceptRA]
-UseDomains=yes
-
+; [Route]
+; Gateway=_ipv6ra
+;
+; [IPv6AcceptRA]
+; UseDomains=yes

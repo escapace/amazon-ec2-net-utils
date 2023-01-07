@@ -4,13 +4,13 @@ Release: 1%{?dist}
 Summary: utilities for managing network interfaces in Amazon EC2
 
 License: Apache 2.0
-URL:     https://github.com/aws/amazon-ec2-net-utils/
+URL:     https://github.com/escapace/amazon-ec2-net-utils/
 Source0: amazon-ec2-net-utils-%{version}.tar.gz
 
 BuildArch: noarch
 
 BuildRequires: make
-Requires: systemd-networkd, udev, curl, iproute
+Requires: systemd-networkd, udev, curl, iproute, retry
 Requires: (systemd-resolved or systemd < 250)
 
 %description
