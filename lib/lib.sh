@@ -268,11 +268,6 @@ create_if_overrides() {
     local dropin="${cfgdir}/eni.conf"
     local -i metric=$((metric_base+10*ifid))
     local -i tableid=$((rule_base+ifid))
-    local dhcp="yes"
-
-    if [ $ifid -gt 0 ]; then
-        dhcp="ipv6"
-    fi
 
     mkdir -p "$cfgdir"
     cat <<EOF > "${dropin}.tmp"
@@ -280,7 +275,7 @@ create_if_overrides() {
 [Match]
 MACAddress=${ether}
 [Network]
-DHCP=${dhcp}
+DHCP=yes
 
 [DHCPv4]
 RouteMetric=${metric}
