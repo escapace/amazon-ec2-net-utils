@@ -24,6 +24,11 @@ declare -r imds_token_path="api/token"
 declare -r syslog_facility="user"
 declare -r syslog_tag="ec2net"
 declare -i -r rule_base=10000
+
+# Systemd installs routes with a metric of 1024 by default.  We
+# override to a lower metric to ensure that our fully configured
+# interfaces are preferred over those in the process of being
+# configured.
 declare -i -r metric_base=512
 declare imds_endpoint imds_token
 
@@ -35,12 +40,13 @@ get_token() {
     # invocations we avoid retrying
     local deadline
     deadline=$(date -d "now+30 seconds" +%s)
+    local old_opts=$-
     while [ "$(date +%s)" -lt $deadline ]; do
         for ep in "${imds_endpoints[@]}"; do
             set +e
             imds_token=$(curl --max-time 5 --connect-timeout 0.15 -s --fail \
                               -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" ${ep}/${imds_token_path})
-            set -e
+            [[ $old_opts = *e* ]] && set -e
             if [ -n "$imds_token" ]; then
                 debug "Got IMDSv2 token from ${ep}"
                 imds_endpoint=$ep
@@ -160,7 +166,7 @@ EOF
 subnet_supports_ipv4() {
     local iface=$1
     if [ -z "$iface" ]; then
-        err "${FUNCNAME[0]} called without an interface"
+        error "${FUNCNAME[0]} called without an interface"
         return 1
     fi
     ! ip -4 addr show dev "$iface" scope global | \
@@ -170,10 +176,27 @@ subnet_supports_ipv4() {
 subnet_supports_ipv6() {
     local iface=$1
     if [ -z "$iface" ]; then
-        err "${FUNCNAME[0]} called without an interface"
+        error "${FUNCNAME[0]} called without an interface"
         return 1
     fi
     ip -6 addr show dev "$iface" scope global | grep -q inet6
+}
+
+subnet_prefixroutes() {
+    local ether=$1
+    local family=${2:-ipv4}
+    if [ -z "$ether" ]; then
+        err "${FUNCNAME[0]} called without an MAC address"
+        return 1
+    fi
+    case "$family" in
+        ipv4)
+            get_iface_imds "$ether" "subnet-${family}-cidr-block"
+            ;;
+        ipv6)
+            get_iface_imds "$ether" "subnet-${family}-cidr-blocks"
+            ;;
+    esac
 }
 
 create_rules() {
@@ -244,11 +267,10 @@ create_if_overrides() {
     local cfgdir="${cfgfile}.d"
     local dropin="${cfgdir}/eni.conf"
     local -i metric=$((metric_base+10*ifid))
-    local -i tableid=0
+    local -i tableid=$((rule_base+ifid))
     local dhcp="yes"
 
     if [ $ifid -gt 0 ]; then
-        tableid=$((rule_base+ifid))
         dhcp="ipv6"
     fi
 
@@ -259,31 +281,50 @@ create_if_overrides() {
 MACAddress=${ether}
 [Network]
 DHCP=${dhcp}
+
 [DHCPv4]
 RouteMetric=${metric}
-[DHCPv6]
+UseRoutes=true
+UseGateway=true
+
+[IPv6AcceptRA]
 RouteMetric=${metric}
+UseGateway=true
+
 EOF
 
-    if [ "$tableid" -gt 0 ]; then
-        cat <<EOF >> "${dropin}.tmp"
+    cat <<EOF >> "${dropin}.tmp"
 [Route]
 Table=${tableid}
 Gateway=_ipv6ra
-[DHCPv4]
-RouteTable=${tableid}
-[IPv6AcceptRA]
-RouteTable=${tableid}
+
 EOF
-	if subnet_supports_ipv4 "$iface"; then
-            # if we're not in a v6-only network, add IPv4 routes to the private table
-            cat <<EOF >> "${dropin}.tmp"
+    for dest in $(subnet_prefixroutes "$ether" ipv6); do
+        cat <<EOF >> "${dropin}.tmp"
+[Route]
+Table=${tableid}
+Destination=${dest}
+
+EOF
+    done
+
+    if subnet_supports_ipv4 "$iface"; then
+        # if not in a v6-only network, add IPv4 routes to the private table
+        cat <<EOF >> "${dropin}.tmp"
 [Route]
 Gateway=_dhcp4
 Table=${tableid}
 EOF
-	fi
+        local dest
+        for dest in $(subnet_prefixroutes "$ether" ipv4); do
+            cat <<EOF >> "${dropin}.tmp"
+[Route]
+Table=${tableid}
+Destination=${dest}
+EOF
+        done
     fi
+
 
     mv "${dropin}.tmp" "$dropin"
     echo 1
@@ -335,6 +376,42 @@ create_interface_config() {
     echo $retval
 }
 
+# device-number, which represents the DeviceIndex field in an EC2
+# NetworkInterfaceAttachment object, is not guaranteed to have
+# propagated to IMDS by the time a hot-plugged interface is visible to
+# the instance.  Further complicating things, IMDS returns 0 for the
+# device-number before propagation is complete, which is a valid value
+# and represents the instance's primary interface.  We cope with this
+# by ensuring that the only interface for which we return 0 as the
+# device-number is the one whose MAC address matches the instance's
+# top-level "mac" field, which is static and guaranteed to be
+# available as soon as the instance launches.
+_get_device_number() {
+    local iface ether default_mac
+    iface="$1"
+    ether="$2"
+
+    default_mac=$(get_imds mac)
+
+    if [ "$ether" = "$default_mac" ]; then
+        echo 0
+        return 0
+    fi
+
+    local -i maxtries=60 ntries=0
+    for (( ntries = 0; ntries < maxtries; ntries++ )); do
+        device_number=$(get_iface_imds "$ether" device-number)
+        if [ $device_number -ne 0 ]; then
+            echo "$device_number"
+            return 0
+        else
+            sleep 0.1
+        fi
+    done
+    error "Unable to identify device-number for $iface after $ntries attempts"
+    return 1
+}
+
 # Interfaces get configured with addresses and routes from
 # DHCP. Routes are inserted in the main table with metrics based on
 # their physical location (slot ID) to ensure deterministic route
@@ -344,12 +421,12 @@ create_interface_config() {
 # addresses from delegated prefixes) will be routing according to an
 # interface-specific routing table.
 setup_interface() {
-    local iface ether default_mac
+    local iface ether
     local -i device_number
     iface=$1
     ether=$2
-    default_mac=$(get_imds mac)
-    device_number=$(get_iface_imds "$ether" device-number)
+
+    device_number=$(_get_device_number "$iface" "$ether")
 
     # Newly provisioned resources (new ENI attachments) take some
     # time to be fully reflected in IMDS. In that case, we poll
@@ -364,9 +441,18 @@ setup_interface() {
 
         changes+=$(create_interface_config "$iface" "$device_number" "$ether")
         for family in 4 6; do
-            if [ "$device_number" -eq 0 ] && [ "$ether" = "$default_mac" ]; then
-                debug "Skipping ipv$family rules for default ENI $iface $ether $default_mac $device_number"
-            else
+            if [ $device_number -ne 0 ]; then
+                # We only create rules for secondary interfaces so
+                # external tools that modify the main route table can
+                # still communicate with the host's primary IPs.  For
+                # example, considering a host with address 10.1.2.3 on
+                # ens5 (device-number-0) and a container communicating
+                # on a docker0 bridge interface, the expectation is
+                # that the container can communicate with 10.1.2.3 in
+                # both directions.  If we install policy rules,
+                # they'll redirect the return traffic out ens5 rather
+                # than docker0, effectively blackholing it.
+                # https://github.com/amazonlinux/amazon-ec2-net-utils/issues/97
                 changes+=$(create_rules "$iface" "$device_number" $family)
             fi
         done
@@ -398,13 +484,40 @@ maybe_reload_networkd() {
     fi
 }
 
+
 register_networkd_reloader() {
-    local -i registered=0
-    while [ $registered -eq 0 ]; do
+    local -i registered=1 cnt=0
+    local -i max=10000
+    local -r lockfile="${lockdir}/${iface}"
+    local old_opts=$-
+
+    # Disable -o errexit in the following block so we can capture
+    # nonzero exit codes from a redirect without considering them
+    # fatal errors
+    set +e
+    while [ $cnt -lt $max ]; do
+        cnt+=1
         mkdir -p "$lockdir"
         trap 'debug "Called trap" ; maybe_reload_networkd' EXIT
-        if echo $$ > "${lockdir}/${iface}"; then
-            registered=1
+        # If the redirect fails, most likely because the target file
+        # already exists and -o noclobber is in effect, $? will be set
+        # nonzero.  If it succeeds, it is set to 0
+        echo $$ > "${lockfile}"
+        registered=$?
+        [ $registered -eq 0 ] && break
+        sleep 0.1
+        if (( $cnt % 100 == 0 )); then
+            info "Unable to lock ${iface} after ${cnt} tries."
         fi
     done
+    # re-enable -o errexit if it had originally been set
+    [[ $old_opts = *e* ]] && set -e
+
+    # If registered is still nonzero when we get here, we have failed
+    # to create the lock.  Log this and exit.
+    if [ $registered -ne 0 ]; then
+        local msg="Unable to lock configuration for ${iface}."
+        error "$(printf "%s Check pid %d", "$msg", "$(cat "${lockfile}")")"
+        exit 1
+    fi
 }

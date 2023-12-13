@@ -1,5 +1,5 @@
 pkgname=amazon-ec2-net-utils
-version=2.3.0
+version=2.4.1
 
 # Used by 'install'
 PREFIX?=/usr/local
@@ -15,8 +15,6 @@ SHELLLIBS=$(wildcard lib/*.sh)
 UDEVRULES=$(wildcard udev/*.rules)
 
 DIRS:=${BINDIR} ${UDEVDIR} ${SYSTEMDDIR} ${SYSTEMD_SYSTEM_DIR} ${SYSTEMD_NETWORK_DIR} ${SHARE_DIR}
-
-DIST_TARGETS=dist-xz dist-gz
 
 .PHONY: help
 help: ## show help
@@ -44,8 +42,16 @@ check: ## Run tests
 		shellcheck --severity warning $${script};\
 	done
 
+.PHONY: scratch-rpm
+scratch-rpm: source_version_suffix=$(shell git describe --dirty --tags | sed "s,^v${version},,")
+scratch-rpm: rpm_version_suffix=$(shell git describe --dirty --tags | sed "s,^v${version},,; s,-,.,g")
+scratch-rpm: scratch-sources
+scratch-rpm: ## build an RPM based on the current working copy
+	rpmbuild -D "_sourcedir $(CURDIR)/.." -D "_source_version_suffix ${source_version_suffix}" \
+	         -D "_rpm_version_suffix ${rpm_version_suffix}" -bb amazon-ec2-net-utils.spec
+
 .PHONY: scratch-sources
-scratch-sources: version=$(shell git describe --dirty --tags)
+scratch-sources: version=$(shell git describe --dirty --tags | sed "s,^v,,")
 scratch-sources: ## generate a tarball based on the current working copy
 	tar czf ../${pkgname}-${version}.tar.gz --exclude=.git --transform 's,^./,./${pkgname}-${version}/,' .
 
@@ -64,6 +70,7 @@ head-check:
 	@if ! git diff --name-only --exit-code v${version} HEAD > /dev/null; then \
 		echo "*** ERROR: Git checkout not at version ${version}"; exit 1; fi ; \
 
-tag: uncommitted-check version-check ## Tag a new release
+tag: uncommitted-check ## Tag a new release
 	@if git rev-parse --verify v$(version) > /dev/null 2>&1; then \
-		echo "*** ERROR: Version $(VERSION) is already tagged"; exit 1; fi
+		echo "*** ERROR: Version $(version) is already tagged"; exit 1; fi
+	git tag v${version}
