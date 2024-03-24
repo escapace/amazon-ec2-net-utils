@@ -67,11 +67,13 @@ log() {
 }
 
 debug() {
-    log debug "$@"
+    true
+    # log debug "$@"
 }
 
 info() {
-    log info "$@"
+    true
+    # log info "$@"
 }
 
 error() {
