@@ -1,5 +1,5 @@
 Name:    amazon-ec2-net-utils
-%define  base_version 2.4.1
+%define  base_version 2.5.0
 %define  source_version %{base_version}%{?_source_version_suffix}
 Version: %{base_version}%{?_rpm_version_suffix}
 Release: 1%{?dist}
@@ -12,7 +12,9 @@ Source0: amazon-ec2-net-utils-%{source_version}.tar.gz
 BuildArch: noarch
 
 BuildRequires: make
+
 Requires: systemd-networkd, udev, curl, iproute, retry
+Requires: /usr/bin/md5sum
 Requires: (systemd-resolved or systemd < 250)
 
 %description

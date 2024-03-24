@@ -1,0 +1,60 @@
+From 3c792705401188860d8c40fd192701696f77c43c Mon Sep 17 00:00:00 2001
+From: Noah Meyerhans <nmeyerha@amazon.com>
+Date: Thu, 7 Mar 2024 17:00:45 -0800
+Subject: [PATCH] change the priority of the networkd configs
+
+ensure they're order before netplan
+---
+ bin/setup-policy-routes.sh | 4 ++--
+ lib/lib.sh                 | 6 +++---
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/bin/setup-policy-routes.sh b/bin/setup-policy-routes.sh
+index a79fd09..9cb623b 100755
+--- a/bin/setup-policy-routes.sh
++++ b/bin/setup-policy-routes.sh
+@@ -62,8 +62,8 @@ remove)
+     register_networkd_reloader
+     info "Removing configuration for $iface."
+     rm -rf "/run/network/$iface" \
+-       "${unitdir}/70-${iface}.network" \
+-       "${unitdir}/70-${iface}.network.d" || true
++       "${unitdir}/07-${iface}.network" \
++       "${unitdir}/07-${iface}.network.d" || true
+     touch "$reload_flag"
+     ;;
+ stop|cleanup)
+diff --git a/lib/lib.sh b/lib/lib.sh
+index 0a2ebc2..de3b00f 100644
+--- a/lib/lib.sh
++++ b/lib/lib.sh
+@@ -151,7 +151,7 @@ create_ipv4_aliases() {
+     local addresses
+     subnet_supports_ipv4 "$iface" || return 0
+     addresses=$(get_iface_imds $mac local-ipv4s | tail -n +2 | sort)
+-    local drop_in_dir="${unitdir}/70-${iface}.network.d"
++    local drop_in_dir="${unitdir}/07-${iface}.network.d"
+     mkdir -p "$drop_in_dir"
+     local file="$drop_in_dir/ec2net_alias.conf"
+     local work="${file}.new"
+@@ -210,7 +210,7 @@ create_rules() {
+     local family=$4
+     local addrs prefixes
+     local local_addr_key subnet_pd_key
+-    local drop_in_dir="${unitdir}/70-${iface}.network.d"
++    local drop_in_dir="${unitdir}/07-${iface}.network.d"
+     mkdir -p "$drop_in_dir"
+ 
+     local -i ruleid=$((device_number+rule_base+100*network_card))
+@@ -373,7 +373,7 @@ create_interface_config() {
+ 
+     local -i retval=0
+ 
+-    local cfgfile="${unitdir}/70-${iface}.network"
++    local cfgfile="${unitdir}/07-${iface}.network"
+     if [ -e "$cfgfile" ] &&
+            [ ! -v EC2_IF_INITIAL_SETUP ]; then
+         debug "Using existing cfgfile ${cfgfile}"
+-- 
+2.25.1
+

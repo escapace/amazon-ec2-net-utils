@@ -15,6 +15,7 @@
 
 set -eo pipefail -o noclobber -o nounset
 
+export unitdir lockdir runtimeroot reload_flag
 declare -r runtimeroot="/run/amazon-ec2-net-utils"
 declare -r lockdir="${runtimeroot}/setup-policy-routes"
 declare -r unitdir="/run/systemd/network"
@@ -29,14 +30,21 @@ iface="$1"
 
 mkdir -p "$runtimeroot"
 
+do_setup() {
+    ether=$(cat /sys/class/net/${iface}/address)
+
+    declare -i changes=0
+    changes+=$(setup_interface $iface $ether)
+    if [ $changes -gt 0 ]; then
+        touch "$reload_flag"
+    fi
+}
+
 case "$2" in
-stop)
-    register_networkd_reloader
-    info "Stopping $iface."
-    rm -rf "/run/network/$iface" \
-       "${unitdir}/70-${iface}.network" \
-       "${unitdir}/70-${iface}.network.d" || true
-    touch "$reload_flag"
+refresh)
+    [ -e "/sys/class/net/${iface}" ] || exit 0
+    info "Starting configuration refresh for $iface"
+    do_setup
     ;;
 start)
     register_networkd_reloader
@@ -47,20 +55,20 @@ start)
     info "Starting configuration for $iface"
     debug /lib/systemd/systemd-networkd-wait-online -i "$iface"
     /lib/systemd/systemd-networkd-wait-online -i "$iface"
-    ether=$(cat /sys/class/net/${iface}/address)
-
-    declare -i changes=0
-    changes+=$(setup_interface $iface $ether)
-    if [ $changes -gt 0 ]; then
-        touch "$reload_flag"
-    fi
+    export EC2_IF_INITIAL_SETUP=1
+    do_setup
     ;;
-cleanup)
-    if [ -e "${lockdir}/${iface}" ]; then
-        info "WARNING: Cleaning up leaked lock ${lockdir}/${iface}"
-        rm -f "${lockdir}/${iface}"
-    fi
+remove)
+    register_networkd_reloader
+    info "Removing configuration for $iface."
+    rm -rf "/run/network/$iface" \
+       "${unitdir}/70-${iface}.network" \
+       "${unitdir}/70-${iface}.network.d" || true
+    touch "$reload_flag"
     ;;
+stop|cleanup)
+    # this is a no-op, only supported for compatibility
+    :;;
 *)
     echo "USAGE: $0: start|stop"
     echo "  This tool is normally invoked via udev rules."
